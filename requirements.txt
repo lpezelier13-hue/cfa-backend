@@ -4,4 +4,3 @@ supabase==2.3.4
 python-dotenv==1.0.0
 pydantic==2.5.0
 httpx==0.25.2
-gotrue==2.4.0
