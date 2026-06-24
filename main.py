@@ -2,8 +2,9 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-from datetime import date
 import os
+import time
+import datetime
 from supabase import create_client, Client
 
 # ── CONFIG ──────────────────────────────────────────────────────────────
@@ -64,24 +65,26 @@ class ApprentiCreate(BaseModel):
     telephone: Optional[str] = None
     entreprise: Optional[str] = None
 
+class LoginData(BaseModel):
+    email: str
+    password: str
+
 # ── HELPER AUTH ──────────────────────────────────────────────────────────
 async def get_user(authorization: str = Header(...)):
     try:
         token = authorization.replace("Bearer ", "")
         user = supabase.auth.get_user(token)
-        if not user or not user.user:
-            raise HTTPException(status_code=401, detail="Non autorisé")
         return user.user
     except Exception:
         raise HTTPException(status_code=401, detail="Token invalide")
 
 async def get_profil(user=Depends(get_user)):
-    res = supabase.table("profils").select("*").eq("id", user.id).single().execute()
+    res = supabase.table("profils").select("*").eq("id", user.id).execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="Profil introuvable")
-    return res.data
+    return res.data[0]
 
-# ── ROUTES SANTÉ ─────────────────────────────────────────────────────────
+# ── SANTÉ ─────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"status": "ok", "app": "CFA Compagnons du Devoir API"}
@@ -92,13 +95,16 @@ def health():
 
 # ── AUTH ─────────────────────────────────────────────────────────────────
 @app.post("/auth/login")
-def login(email: str, password: str):
+def login(data: LoginData):
     try:
-        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        profil = supabase.table("profils").select("*").eq("id", res.user.id).single().execute()
+        res = supabase.auth.sign_in_with_password({
+            "email": data.email,
+            "password": data.password
+        })
+        profil = supabase.table("profils").select("*").eq("id", res.user.id).execute()
         return {
             "access_token": res.session.access_token,
-            "user": profil.data
+            "user": profil.data[0] if profil.data else {}
         }
     except Exception as e:
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
@@ -124,7 +130,6 @@ def create_metier(data: MetierCreate, profil=Depends(get_profil)):
 def delete_metier(metier_id: str, profil=Depends(get_profil)):
     if profil["role"] != "responsable":
         raise HTTPException(status_code=403, detail="Réservé au responsable")
-    # Vérifier qu'aucune demande n'utilise ce métier
     used = supabase.table("demandes").select("id").eq("metier_id", metier_id).execute()
     if used.data:
         raise HTTPException(status_code=400, detail=f"{len(used.data)} demande(s) utilisent ce métier")
@@ -141,7 +146,7 @@ def get_budgets():
 def create_budget(data: BudgetCreate, profil=Depends(get_profil)):
     if profil["role"] != "responsable":
         raise HTTPException(status_code=403, detail="Réservé au responsable")
-    bid = "B" + str(int(__import__("time").time()))[-6:]
+    bid = "B" + str(int(time.time()))[-6:]
     res = supabase.table("budgets").insert({"id": bid, **data.dict()}).execute()
     return res.data[0]
 
@@ -168,7 +173,6 @@ def get_demandes(profil=Depends(get_profil)):
     if profil["role"] in ("responsable", "secretariat", "direction"):
         res = supabase.table("demandes").select("*").order("created_at", desc=True).execute()
     else:
-        # Formateur : seulement ses demandes
         res = supabase.table("demandes").select("*").eq("formateur_id", profil["id"]).order("created_at", desc=True).execute()
     return res.data
 
@@ -176,7 +180,7 @@ def get_demandes(profil=Depends(get_profil)):
 def create_demande(data: DemandeCreate, profil=Depends(get_profil)):
     if profil["role"] not in ("formateur", "secretariat", "responsable"):
         raise HTTPException(status_code=403, detail="Non autorisé")
-    did = "DA-" + str(int(__import__("time").time()))[-6:]
+    did = "DA-" + str(int(time.time()))[-6:]
     payload = {
         "id": did,
         "formateur_id": profil["id"],
@@ -196,7 +200,7 @@ def update_demande(demande_id: str, data: DemandeUpdate, profil=Depends(get_prof
     payload = {
         "statut": data.statut,
         "motif_refus": data.motif_refus,
-        "date_validation": __import__("datetime").datetime.now().isoformat(),
+        "date_validation": datetime.datetime.now().isoformat(),
         "valideur_id": profil["id"],
     }
     if data.budget_id:
@@ -214,7 +218,7 @@ def get_apprentis():
 def create_apprenti(data: ApprentiCreate, profil=Depends(get_profil)):
     if profil["role"] not in ("responsable", "secretariat"):
         raise HTTPException(status_code=403, detail="Non autorisé")
-    aid = "E" + str(int(__import__("time").time()))[-6:]
+    aid = "E" + str(int(time.time()))[-6:]
     res = supabase.table("apprentis").insert({"id": aid, **data.dict()}).execute()
     return res.data[0]
 
@@ -240,4 +244,5 @@ def get_stats(profil=Depends(get_profil)):
         "total_attente": total_attente,
         "nb_demandes_attente": len([d for d in demandes if d["statut"] == "attente"]),
         "nb_bc_valides": len([d for d in demandes if d["statut"] == "valide"]),
+    }
     }
